@@ -6,6 +6,7 @@ from joblib import Parallel, delayed
 from sklearn.metrics import roc_auc_score
 from format_data import X_DATA, Y_DATA, f
 from sklearn.metrics import confusion_matrix
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.model_selection import StratifiedKFold
 
 
@@ -161,50 +162,10 @@ for TRAIN_INDEX, TEST_INDEX in SKF.split(X_DATA, Y_DATA):
 	Y_TEST = Y_DATA[TEST_INDEX]
 	X_RES = X_TRAIN
 	Y_RES = Y_TRAIN
-	
-	# Generating the initial population
-	Weight_Matrix_Population = [ np.random.rand(b, f) for n in range(N)]
-	k_value_Population = [ (1 + 2 * random.randint(0, 2)) for n in range(N) ]
-	upper_bound_delta = 1
-	
-	# Loop for evolution through G generations
-	for i in range(G):
 
-		if ( (i + 1) % g == 0 ):
-			upper_bound_delta = upper_bound_delta - g/G
-
-		num_cores = multiprocessing.cpu_count()
-		result = Parallel(n_jobs=num_cores)(delayed(fitness)(j, X_RES, Y_RES) for j in range(N))
-		
-		fitness_value = [[j, result[j]] for j in range(N)]
-		fitness_value.sort(key=lambda x: x[1], reverse=True)
-		print('Generation ' + str(i) + ': ' + str(fitness_value[0][1]))
-
-		if (i + 1 == G):
-			fittest = fitness_value[0][0]
-			break
-
-		pop_list = [fi[0] for fi in fitness_value[C:N]]
-		fit_copy = fitness_value[:]
-
-		for j in range(N - C):
-			s = random_choose(fit_copy)
-			t = random_choose(fit_copy)
-			add_crossover(s, t)
-
-		for fi in fitness_value[1:C]:
-			mutate(fi[0])
-
-		for j in sorted(pop_list, reverse=True): 
-			del Weight_Matrix_Population[j]
-			del k_value_Population[j]
-
-		for j in range(C, N):
-			mutate(j)
-
-	print('*************************************')
-
-	Y_PRED = knn_set(fittest, X_RES, Y_RES, X_TEST)
+	classifier = KNeighborsClassifier(n_neighbors=2)  
+	classifier.fit(X_RES, Y_RES) 
+	Y_PRED = classifier.predict(X_TEST)
 	CM = np.add(CM, confusion_matrix(Y_TEST, Y_PRED))
 	Y_TEST_TOTAL = np.concatenate((Y_TEST_TOTAL, Y_TEST))
 	Y_PRED_TOTAL = np.concatenate((Y_PRED_TOTAL, Y_PRED))
@@ -214,10 +175,10 @@ rec = CM[1][1] / (CM[1][1] + CM[1][0])
 fmes = 2 * prec * rec / (prec + rec)
 auc = roc_auc_score(Y_TEST_TOTAL, Y_PRED_TOTAL)
 balan = bal(CM)
-# print(str(prec) + ' ' + str(rec) + ' ' + str(fmes) + ' ' + str(auc) + ' ' + str(balan))
-print('Confusion Matrix')
-print(CM)
-print('Precision: ' + str(prec))
-print('Recall: ' + str(rec))
-print('fmeasure: ' + str(fmes))
-print('Balance: ' + str(balan))
+print(str(prec) + ' ' + str(rec) + ' ' + str(fmes) + ' ' + str(auc) + ' ' + str(balan))
+# print('Confusion Matrix')
+# print(CM)
+# print('Precision: ' + str(prec))
+# print('Recall: ' + str(rec))
+# print('fmeasure: ' + str(fmes))
+# print('Balance: ' + str(balan))

@@ -4,9 +4,9 @@ import numpy as np
 import multiprocessing
 from joblib import Parallel, delayed
 from sklearn.metrics import roc_auc_score
-from format_data import X_DATA, Y_DATA, f
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import StratifiedKFold
+from format_data import X_DATA, Y_DATA, X_TEST_DATA, Y_TEST_DATA, f
 
 
 # Constant definitions
@@ -18,7 +18,7 @@ N = 100
 maxk = 10
 Kfolds = 3
 alpha = 0.5
-Nfolds = 5
+Nfolds = 10
 elitism = 0.1
 Tourn_size = 5
 C = int(N * elitism)
@@ -93,6 +93,15 @@ def mutate(n):
 	k_value_Population[n] = k
 
 
+# Function to compute kappa statistic for the input confusion matrix
+def kappa(ConfMat):
+	a1, b1, c1, d1 = ConfMat[0][0], ConfMat[0][1], ConfMat[1][0], ConfMat[1][1]
+	po = (a1 + d1) / (a1 + b1 + c1 + d1)
+	pe = ((a1 + b1) * (a1 + c1) + (d1 + b1) * (d1 + c1)) / pow(a1 + b1 + c1 + d1, 2)
+	Kappa = (po - pe) / (1 - pe)
+	return Kappa
+
+
 # Function to compute weighted F-measure
 def fmeasure(ConfMat, beta):
 	if(ConfMat[1][1] == 0):
@@ -112,21 +121,25 @@ def bal(cm):
 
 
 # Function to compute fitness of nth individual
-def fitness(n, x_data, y_data):
+def fitness(n, xy_data_list):
+	fit = 0
+	for xy_data in xy_data_list:
+		x_data = xy_data[:,:-1]
+		y_data = xy_data[:,-1]
+		# K fold stratified cross validation
+		skf = StratifiedKFold(n_splits=Kfolds)
+		cm = np.array([[0, 0], [0, 0]])
 
-	# K fold stratified cross validation
-	skf = StratifiedKFold(n_splits=Kfolds)
-	cm = np.array([[0, 0], [0, 0]])
+		for train_index, test_index in skf.split(x_data, y_data):
+			x_train = x_data[train_index]
+			x_test = x_data[test_index]
+			y_train = y_data[train_index]
+			y_test = y_data[test_index]
+			y_pred = knn_set(n ,x_train, y_train, x_test)
+			cm = np.add(cm, confusion_matrix(y_test, y_pred))
 
-	for train_index, test_index in skf.split(x_data, y_data):
-		x_train = x_data[train_index]
-		x_test = x_data[test_index]
-		y_train = y_data[train_index]
-		y_test = y_data[test_index]
-		y_pred = knn_set(n ,x_train, y_train, x_test)
-		cm = np.add(cm, confusion_matrix(y_test, y_pred))
-
-	return (fmeasure(cm, 10))
+		fit += fmeasure(cm , 10)
+	return fit
 
 
 # Function which returns a list of predicted labels for test data
@@ -143,81 +156,83 @@ def knn(x_train, y_train, x, WM, Kval):
 	count = np.sum(y_train[np.argpartition(dist, Kval)[:Kval]])
 	if (count + count >= Kval):
 		return 1
+	elif (count + count == Kval and y_train[np.argmin(dist)] == 1 ):
+		return 1
 	else:
 		return 0
 
 
-# N fold stratified cross validation 
-SKF = StratifiedKFold(n_splits=Nfolds)
-CM = np.array([[0, 0], [0, 0]])
-Y_TEST_TOTAL = np.array([])
-Y_PRED_TOTAL = np.array([])
+X_TRAIN = X_DATA
+X_TEST = X_TEST_DATA
+Y_TRAIN = Y_DATA 
+Y_TEST = Y_TEST_DATA
+XY_TRAIN = np.concatenate((X_TRAIN, np.array([Y_TRAIN]).T), axis=1)
+Indices = set()
+for x in X_TEST:
+	Dist = np.linalg.norm(np.subtract(X_TRAIN, x), axis=1)
+	for index in np.argpartition(Dist, 2)[:2]:
+		Indices.add(index)
 
-for TRAIN_INDEX, TEST_INDEX in SKF.split(X_DATA, Y_DATA):
+XY_TRAIN = XY_TRAIN[np.array(list(Indices))]
+XY_TRAIN_LIST = [XY_TRAIN]
+for i in range(0):
+	np.random.shuffle(XY_TRAIN)
+	XY_TRAIN_LIST.append(XY_TRAIN)
 
-	X_TRAIN = X_DATA[TRAIN_INDEX]
-	X_TEST = X_DATA[TEST_INDEX]
-	Y_TRAIN = Y_DATA[TRAIN_INDEX] 
-	Y_TEST = Y_DATA[TEST_INDEX]
-	X_RES = X_TRAIN
-	Y_RES = Y_TRAIN
+# Generating the initial population
+Weight_Matrix_Population = [ np.random.rand(b, f) for n in range(N)]
+k_value_Population = [ (1 + 2 * random.randint(0, 2)) for n in range(N) ]
+
+# Loop for evolution through G generations
+for i in range(G):
+
+	if ( (i + 1) % g == 0 ):
+		upper_bound_delta = upper_bound_delta - g/G
+
+	num_cores = multiprocessing.cpu_count()
+	result = Parallel(n_jobs=num_cores)(delayed(fitness)(j, XY_TRAIN_LIST) for j in range(N))
 	
-	# Generating the initial population
-	Weight_Matrix_Population = [ np.random.rand(b, f) for n in range(N)]
-	k_value_Population = [ (1 + 2 * random.randint(0, 2)) for n in range(N) ]
-	upper_bound_delta = 1
-	
-	# Loop for evolution through G generations
-	for i in range(G):
+	fitness_value = [[j, result[j]] for j in range(N)]
+	fitness_value.sort(key=lambda x: x[1], reverse=True)
+	# print('Generation ' + str(i) + ': ' + str(fitness_value[0][1]))
 
-		if ( (i + 1) % g == 0 ):
-			upper_bound_delta = upper_bound_delta - g/G
+	if (i + 1 == G):
+		fittest = fitness_value[0][0]
+		break
 
-		num_cores = multiprocessing.cpu_count()
-		result = Parallel(n_jobs=num_cores)(delayed(fitness)(j, X_RES, Y_RES) for j in range(N))
-		
-		fitness_value = [[j, result[j]] for j in range(N)]
-		fitness_value.sort(key=lambda x: x[1], reverse=True)
-		print('Generation ' + str(i) + ': ' + str(fitness_value[0][1]))
+	pop_list = [fi[0] for fi in fitness_value[C:N]]
+	fit_copy = fitness_value[:]
 
-		if (i + 1 == G):
-			fittest = fitness_value[0][0]
-			break
+	for j in range(N - C):
+		s = random_choose(fit_copy)
+		t = random_choose(fit_copy)
+		add_crossover(s, t)
 
-		pop_list = [fi[0] for fi in fitness_value[C:N]]
-		fit_copy = fitness_value[:]
+	for fi in fitness_value[1:C]:
+		mutate(fi[0])
 
-		for j in range(N - C):
-			s = random_choose(fit_copy)
-			t = random_choose(fit_copy)
-			add_crossover(s, t)
+	for j in sorted(pop_list, reverse=True): 
+		del Weight_Matrix_Population[j]
+		del k_value_Population[j]
 
-		for fi in fitness_value[1:C]:
-			mutate(fi[0])
+	for j in range(C, N):
+		mutate(j)
 
-		for j in sorted(pop_list, reverse=True): 
-			del Weight_Matrix_Population[j]
-			del k_value_Population[j]
+# print('*************************************')
 
-		for j in range(C, N):
-			mutate(j)
-
-	print('*************************************')
-
-	Y_PRED = knn_set(fittest, X_RES, Y_RES, X_TEST)
-	CM = np.add(CM, confusion_matrix(Y_TEST, Y_PRED))
-	Y_TEST_TOTAL = np.concatenate((Y_TEST_TOTAL, Y_TEST))
-	Y_PRED_TOTAL = np.concatenate((Y_PRED_TOTAL, Y_PRED))
-
+Y_PRED = knn_set(fittest, X_TRAIN, Y_TRAIN, X_TEST)
+CM = confusion_matrix(Y_TEST, Y_PRED)
 prec = CM[1][1] / (CM[1][1] + CM[0][1])
 rec = CM[1][1] / (CM[1][1] + CM[1][0])
 fmes = 2 * prec * rec / (prec + rec)
-auc = roc_auc_score(Y_TEST_TOTAL, Y_PRED_TOTAL)
+auc = roc_auc_score(Y_TEST, Y_PRED)
 balan = bal(CM)
-# print(str(prec) + ' ' + str(rec) + ' ' + str(fmes) + ' ' + str(auc) + ' ' + str(balan))
-print('Confusion Matrix')
-print(CM)
-print('Precision: ' + str(prec))
-print('Recall: ' + str(rec))
-print('fmeasure: ' + str(fmes))
-print('Balance: ' + str(balan))
+print(str(prec) + ' ' + str(rec) + ' ' + str(fmes) + ' ' + str(auc) + ' ' + str(balan))
+
+# print('Confusion Matrix')
+# print(CM)
+# print('Precision: ' + str(prec))
+# print('Recall: ' + str(rec))
+# print('fmeasure: ' + str(fmes))
+# print('AUC: ' + str(auc))
+# print('Balance: ' + str(balan))
